@@ -611,11 +611,7 @@ class CeleryInstrumentor(BaseInstrumentor):
         task = utils.retrieve_task_from_sender(kwargs)
         task_id = utils.retrieve_task_id_from_message(kwargs)
         task_name = task.name if task is not None else None
-        logger.debug(
-            "after_task_publish signal received task_id=%s task_name=%s",
-            task_id,
-            task_name,
-        )
+        _log_signal("after_task_publish", task_id, task_name, None)
 
         if task is None or task_id is None:
             return
