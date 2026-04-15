@@ -134,7 +134,7 @@ _TASK_RETRY_REASON_KEY = "celery.retry.reason"
 _TASK_NAME_KEY = "celery.task_name"
 
 
-class CeleryGetter(Getter["Request"]):
+class CeleryGetter(Getter):
     def get(self, carrier: "Request", key: str) -> list[str] | None:
         value = getattr(carrier, key, None)
         if value is None:
@@ -279,6 +279,14 @@ class CeleryInstrumentor(BaseInstrumentor):
 
     Must be initialized in the worker subprocess via the
     ``worker_process_init`` signal."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.metrics: Optional[_CeleryTaskMetrics] = None
+        self.task_id_to_start_time: dict = {}
+        self.task_id_to_received_time: dict = {}
+        self.prefetched_task_id_to_labels: dict = {}
+        self.executing_task_id_to_worker: dict = {}
 
     def instrumentation_dependencies(self) -> Collection[str]:
         return _instruments
@@ -809,6 +817,11 @@ class CeleryWorkerInstrumentor(BaseInstrumentor):
         def init_worker_metrics(sender, instance, conf, **kwargs):
             CeleryWorkerInstrumentor().instrument()
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.metrics: Optional[_CeleryWorkerMetrics] = None
+        self.online_workers: set = set()
 
     def instrumentation_dependencies(self) -> Collection[str]:
         return _instruments

@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Bump `pylint` to `4.0.5`
   ([#4244](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4244))
+- `opentelemetry-instrumentation-celery`: Add task and worker lifecycle metrics matching Celery Flower
+  ([#4439](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4439))
+
+### Fixed
+
+- `opentelemetry-instrumentation-celery`: Fix memory leak in `task_id_to_start_time` dict never being cleaned up
+  ([#4439](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4439))
 
 ### Breaking changes
 
