@@ -19,26 +19,38 @@ from opentelemetry.instrumentation.celery import CeleryGetter
 
 class TestCeleryGetter(TestCase):
     def test_get_none(self):
+        """Missing attribute on carrier should return None."""
         getter = CeleryGetter()
         carrier = {}
         val = getter.get(carrier, "test")
         self.assertIsNone(val)
 
     def test_get_str(self):
+        """String attribute should be wrapped in a single-element list."""
         mock_obj = mock.Mock()
         getter = CeleryGetter()
         mock_obj.test = "val"
         val = getter.get(mock_obj, "test")
-        self.assertEqual(val, ("val",))
+        self.assertEqual(val, ["val"])
 
     def test_get_iter(self):
+        """Iterable attribute should be returned as a list."""
         mock_obj = mock.Mock()
         getter = CeleryGetter()
         mock_obj.test = ["val"]
         val = getter.get(mock_obj, "test")
         self.assertEqual(val, ["val"])
 
+    def test_get_non_str_non_iterable(self):
+        """Non-string, non-iterable value should be coerced to [str(value)]."""
+        getter = CeleryGetter()
+        mock_obj = mock.Mock()
+        mock_obj.key = 42
+        val = getter.get(mock_obj, "key")
+        self.assertEqual(val, ["42"])
+
     def test_keys(self):
+        """keys() should return an empty list for any carrier."""
         getter = CeleryGetter()
         keys = getter.keys({})
         self.assertEqual(keys, [])
