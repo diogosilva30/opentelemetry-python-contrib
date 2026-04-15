@@ -117,6 +117,7 @@ if TYPE_CHECKING:
     from celery.app.task import Task
 
     from opentelemetry.metrics import Counter, Histogram, Meter, UpDownCounter
+    from opentelemetry.metrics._internal.instrument import Gauge
 if VERSION >= (4, 0, 1):
     from billiard.einfo import ExceptionWithTraceback
 else:
@@ -220,7 +221,7 @@ class _CeleryTaskMetricNames:
     worker_prefetched_tasks: str = "flower.worker.prefetched.tasks"
     task_runtime_seconds: str = "flower.task.runtime.seconds"
     worker_currently_executing_tasks: str = (
-        "flower.worker.currently.executing.tasks"
+        "flower.worker.number.of.currently.executing.tasks"
     )
 
 
@@ -256,7 +257,7 @@ class _CeleryTaskMetrics:
     """Metrics for tracking Celery task events and states."""
 
     events_total: "Counter"
-    task_prefetch_time_seconds: "Histogram"
+    task_prefetch_time_seconds: "Gauge"
     worker_prefetched_tasks: "UpDownCounter"
     task_runtime_seconds: "Histogram"
     worker_currently_executing_tasks: "UpDownCounter"
@@ -382,7 +383,7 @@ class CeleryInstrumentor(BaseInstrumentor):
         if received_time is None:
             return
 
-        self._metrics().task_prefetch_time_seconds.record(
+        self._metrics().task_prefetch_time_seconds.set(
             default_timer() - received_time,
             attributes={"task": task_name, "worker": worker},
         )
@@ -764,7 +765,7 @@ class CeleryInstrumentor(BaseInstrumentor):
                     "by Celery instrumentation."
                 ),
             ),
-            task_prefetch_time_seconds=meter.create_histogram(
+            task_prefetch_time_seconds=meter.create_gauge(
                 name=_TASK_METRIC_NAMES.task_prefetch_time_seconds,
                 unit="seconds",
                 description=(

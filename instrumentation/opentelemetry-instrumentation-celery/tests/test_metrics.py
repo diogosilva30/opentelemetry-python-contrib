@@ -204,7 +204,7 @@ class TestMetricsIntegration(TestBase):
         self.assertGreater(len(runtime.data.data_points), 0)
 
     def test_prefetch_time_recorded(self):
-        """A completed task should produce a flower.task.prefetch.time.seconds histogram."""
+        """A completed task should produce a flower.task.prefetch.time.seconds gauge."""
         self._run_task()
         metrics = self.get_sorted_metrics(SCOPE)
         prefetch = _find_metric(metrics, "flower.task.prefetch.time.seconds")
@@ -225,7 +225,7 @@ class TestMetricsIntegration(TestBase):
         self._run_task()
         metrics = self.get_sorted_metrics(SCOPE)
         executing = _find_metric(
-            metrics, "flower.worker.currently.executing.tasks"
+            metrics, "flower.worker.number.of.currently.executing.tasks"
         )
         self.assertIsNotNone(executing)
         self.assertEqual(executing.data.data_points[0].value, 0)
@@ -671,8 +671,8 @@ class TestPrefetchTimeGuards(TestBase):
             prefetch is None or len(prefetch.data.data_points) == 0
         )
 
-    def test_record_prefetch_time_records_histogram(self):
-        """When received_time exists, histogram should be recorded."""
+    def test_record_prefetch_time_records_gauge(self):
+        """When received_time exists, gauge should be recorded."""
         self.instrumentor.task_id_to_received_time["t1"] = default_timer()
         self.instrumentor._record_prefetch_time("t1", "my.task", "celery@w")
         metrics = self.get_sorted_metrics(SCOPE)
@@ -713,7 +713,7 @@ class TestTrackingGuards(TestBase):
         self.instrumentor._untrack_executing_task("nonexistent-id")
         metrics = self.get_sorted_metrics(SCOPE)
         executing = _find_metric(
-            metrics, "flower.worker.currently.executing.tasks"
+            metrics, "flower.worker.number.of.currently.executing.tasks"
         )
         self.assertTrue(
             executing is None or len(executing.data.data_points) == 0
@@ -862,7 +862,7 @@ class TestTaskRevokedExecutingMetrics(TestBase):
 
         metrics = self.get_sorted_metrics(SCOPE)
         executing = _find_metric(
-            metrics, "flower.worker.currently.executing.tasks"
+            metrics, "flower.worker.number.of.currently.executing.tasks"
         )
         self.assertIsNotNone(executing)
         self.assertEqual(executing.data.data_points[0].value, 0)
