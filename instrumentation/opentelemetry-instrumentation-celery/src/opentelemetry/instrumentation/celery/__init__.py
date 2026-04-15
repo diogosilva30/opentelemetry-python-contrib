@@ -134,7 +134,7 @@ _TASK_RETRY_REASON_KEY = "celery.retry.reason"
 _TASK_NAME_KEY = "celery.task_name"
 
 
-class CeleryGetter(Getter):
+class CeleryGetter(Getter[Request]):
     def get(self, carrier: "Request", key: str) -> list[str] | None:
         value = getattr(carrier, key, None)
         if value is None:
