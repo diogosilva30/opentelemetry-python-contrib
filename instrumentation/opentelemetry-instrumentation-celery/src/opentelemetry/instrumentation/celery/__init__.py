@@ -253,7 +253,7 @@ _EVENT_TYPES = _CeleryEventTypes()
 
 
 @dataclass
-class _CeleryTaskMetrics:
+class CeleryTaskMetrics:
     """Metrics for tracking Celery task events and states."""
 
     events_total: "Counter"
@@ -264,7 +264,7 @@ class _CeleryTaskMetrics:
 
 
 @dataclass
-class _CeleryWorkerMetrics:
+class CeleryWorkerMetrics:
     """Metrics for tracking Celery worker lifecycle."""
 
     worker_online: "UpDownCounter"
@@ -282,7 +282,7 @@ class CeleryInstrumentor(BaseInstrumentor):
 
     def __init__(self) -> None:
         super().__init__()
-        self.metrics: Optional[_CeleryTaskMetrics] = None
+        self.metrics: Optional[CeleryTaskMetrics] = None
         self.task_id_to_start_time: dict = {}
         self.task_id_to_received_time: dict = {}
         self.prefetched_task_id_to_labels: dict = {}
@@ -352,7 +352,7 @@ class CeleryInstrumentor(BaseInstrumentor):
         self.prefetched_task_id_to_labels = {}
         self.executing_task_id_to_worker = {}
 
-    def _metrics(self) -> _CeleryTaskMetrics:
+    def _metrics(self) -> CeleryTaskMetrics:
         """Retrieve the Celery metrics object, raising an error if not initialized."""
         if self.metrics is not None:
             return self.metrics
@@ -762,9 +762,9 @@ class CeleryInstrumentor(BaseInstrumentor):
             )
 
     @staticmethod
-    def create_task_metrics(meter: "Meter") -> _CeleryTaskMetrics:
+    def create_task_metrics(meter: "Meter") -> CeleryTaskMetrics:
         """Create the metrics for tracking Celery task events and states."""
-        return _CeleryTaskMetrics(
+        return CeleryTaskMetrics(
             events_total=meter.create_counter(
                 name=_TASK_METRIC_NAMES.events_total,
                 unit="{event}",
@@ -820,7 +820,7 @@ class CeleryWorkerInstrumentor(BaseInstrumentor):
 
     def __init__(self) -> None:
         super().__init__()
-        self.metrics: Optional[_CeleryWorkerMetrics] = None
+        self.metrics: Optional[CeleryWorkerMetrics] = None
         self.online_workers: set = set()
 
     def instrumentation_dependencies(self) -> Collection[str]:
@@ -853,7 +853,7 @@ class CeleryWorkerInstrumentor(BaseInstrumentor):
         self.metrics = None
         self.online_workers = set()
 
-    def _worker_metrics(self) -> _CeleryWorkerMetrics:
+    def _worker_metrics(self) -> CeleryWorkerMetrics:
         """Return the worker metrics, raising if not yet initialized."""
         if self.metrics is not None:
             return self.metrics
@@ -887,9 +887,9 @@ class CeleryWorkerInstrumentor(BaseInstrumentor):
         )
 
     @staticmethod
-    def _create_worker_metrics(meter: "Meter") -> _CeleryWorkerMetrics:
+    def _create_worker_metrics(meter: "Meter") -> CeleryWorkerMetrics:
         """Create the metrics for tracking Celery worker lifecycle."""
-        return _CeleryWorkerMetrics(
+        return CeleryWorkerMetrics(
             worker_online=meter.create_up_down_counter(
                 name=_WORKER_METRIC_NAMES.worker_online,
                 unit="{worker}",
