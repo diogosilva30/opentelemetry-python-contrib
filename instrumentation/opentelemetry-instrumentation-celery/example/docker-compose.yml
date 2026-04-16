@@ -1,0 +1,72 @@
+x-uv: &uv
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm
+  volumes:
+    - ../../..:/repo
+    - venv:/repo/.venv
+  working_dir: /repo
+
+x-env: &env
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/0
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://grafana-otel-lgtm:4317
+  DJANGO_SETTINGS_MODULE: myproject.settings
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  grafana-otel-lgtm:
+    image: grafana/otel-lgtm:0.6.0
+    ports:
+      # Grafana UI
+      - "3000:3000"
+      # Collector gRPC
+      - "4317:4317"
+      # Collector HTTP
+      - "4318:4318"
+
+  # One-shot service that populates the shared venv.
+  init:
+    <<: *uv
+    environment:
+      <<: *env
+    command: >
+      sh -c "uv sync --frozen --all-packages &&
+             uv pip install django redis opentelemetry-exporter-otlp-proto-grpc opentelemetry-sdk"
+
+  worker:
+    <<: *uv
+    environment:
+      <<: *env
+    command: >
+      uv run --no-sync
+        --directory instrumentation/opentelemetry-instrumentation-celery/example
+        celery -A myproject worker --loglevel=info
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      grafana-otel-lgtm:
+        condition: service_started
+
+  django:
+    <<: *uv
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *env
+    command: >
+      uv run --no-sync
+        --directory instrumentation/opentelemetry-instrumentation-celery/example
+        python manage.py runserver 0.0.0.0:8000
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+
+volumes:
+  venv:
