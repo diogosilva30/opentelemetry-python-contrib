@@ -111,7 +111,7 @@ class TestPrefetchTimeGuards(TestBase):
 
     def setUp(self):
         super().setUp()
-        self.instrumentor = CeleryInstrumentor()
+        self.instrumentor = CeleryWorkerInstrumentor()
         self.instrumentor.instrument()
 
     def tearDown(self):
@@ -160,31 +160,36 @@ class TestTrackingGuards(TestBase):
 
     def setUp(self):
         super().setUp()
-        self.instrumentor = CeleryInstrumentor()
-        self.instrumentor.instrument()
+        self.task_instrumentor = CeleryInstrumentor()
+        self.task_instrumentor.instrument()
+        self.worker_instrumentor = CeleryWorkerInstrumentor()
+        self.worker_instrumentor.instrument()
 
     def tearDown(self):
-        self.instrumentor.uninstrument()
+        self.task_instrumentor.uninstrument()
+        self.worker_instrumentor.uninstrument()
         super().tearDown()
 
     def test_track_prefetched_task_none_args_is_noop(self):
         """Any None argument should cause an early return without tracking."""
-        self.instrumentor._track_prefetched_task(None, "task", "worker")
-        self.instrumentor._track_prefetched_task("id", None, "worker")
-        self.instrumentor._track_prefetched_task("id", "task", None)
+        self.worker_instrumentor._track_prefetched_task(None, "task", "worker")
+        self.worker_instrumentor._track_prefetched_task("id", None, "worker")
+        self.worker_instrumentor._track_prefetched_task("id", "task", None)
         self.assertEqual(
-            len(self.instrumentor.prefetched_task_id_to_labels), 0
+            len(self.worker_instrumentor.prefetched_task_id_to_labels), 0
         )
 
     def test_track_executing_task_none_args_is_noop(self):
         """None task_id or worker should cause an early return."""
-        self.instrumentor._track_executing_task(None, "worker")
-        self.instrumentor._track_executing_task("id", None)
-        self.assertEqual(len(self.instrumentor.executing_task_id_to_worker), 0)
+        self.task_instrumentor._track_executing_task(None, "worker")
+        self.task_instrumentor._track_executing_task("id", None)
+        self.assertEqual(
+            len(self.task_instrumentor.executing_task_id_to_worker), 0
+        )
 
     def test_untrack_executing_task_unknown_id_is_noop(self):
         """Untracking an unknown task_id should not raise or record."""
-        self.instrumentor._untrack_executing_task("nonexistent-id")
+        self.task_instrumentor._untrack_executing_task("nonexistent-id")
         metrics = self.get_sorted_metrics(SCOPE)
         executing = _find_metric(
             metrics, "flower.worker.number.of.currently.executing.tasks"
@@ -195,7 +200,7 @@ class TestTrackingGuards(TestBase):
 
     def test_record_histograms_none_task_id_is_noop(self):
         """None task_id should skip histogram recording."""
-        self.instrumentor._record_histograms(
+        self.task_instrumentor._record_histograms(
             None, {"task": "t", "worker": "w"}
         )
         metrics = self.get_sorted_metrics(SCOPE)
@@ -313,33 +318,6 @@ class TestTracePrerunPostrunGuards(TestBase):
         self.instrumentor._trace_postrun(task=task_add, task_id="no-ctx")
         spans = self.memory_exporter.get_finished_spans()
         self.assertEqual(len(spans), 0)
-
-
-class TestTaskRevokedExecutingMetrics(TestBase):
-    """Tests for revoke cleanup of executing-task metrics."""
-
-    def setUp(self):
-        super().setUp()
-        self.instrumentor = CeleryInstrumentor()
-        self.instrumentor.instrument()
-
-    def tearDown(self):
-        self.instrumentor.uninstrument()
-        super().tearDown()
-
-    def test_task_revoked_decrements_executing(self):
-        """Revoking an executing task should decrement the executing gauge."""
-        request = _make_request(task_id="rev-3", hostname="celery@w1")
-        self.instrumentor._track_executing_task("rev-3", "celery@w1")
-
-        self.instrumentor._trace_task_revoked(request=request, sender=None)
-
-        metrics = self.get_sorted_metrics(SCOPE)
-        executing = _find_metric(
-            metrics, "flower.worker.number.of.currently.executing.tasks"
-        )
-        self.assertIsNotNone(executing)
-        self.assertEqual(executing.data.data_points[0].value, 0)
 
 
 class TestTracePostrunStateMetrics(TestBase):
@@ -590,13 +568,22 @@ class TestMemoryLeakPrevention(TestBase):
         request = _make_request(task_id="leak-2", hostname="celery@w1")
         sender = type("Sender", (), {"hostname": "celery@w1"})()
 
+        worker_instrumentor = CeleryWorkerInstrumentor()
+        worker_instrumentor.instrument()
+
         # Simulate task_received which populates task_id_to_received_time
-        self.instrumentor._trace_task_received(request=request, sender=sender)
-        self.assertIn("leak-2", self.instrumentor.task_id_to_received_time)
+        worker_instrumentor._trace_task_received(
+            request=request, sender=sender
+        )
+        self.assertIn("leak-2", worker_instrumentor.task_id_to_received_time)
 
         # Revoke should clean it up
-        self.instrumentor._trace_task_revoked(request=request, sender=sender)
-        self.assertNotIn("leak-2", self.instrumentor.task_id_to_received_time)
+        worker_instrumentor._trace_task_revoked(request=request, sender=sender)
+        self.assertNotIn(
+            "leak-2", worker_instrumentor.task_id_to_received_time
+        )
+
+        worker_instrumentor.uninstrument()
 
 
 class TestTraceRetryNotRecording(TestBase):
@@ -689,26 +676,26 @@ class TestUninstrumentClearsState(TestBase):
 
         # Simulate some accumulated state
         instrumentor.task_id_to_start_time["t1"] = 1.0
-        instrumentor.task_id_to_received_time["t1"] = 2.0
-        instrumentor.prefetched_task_id_to_labels["t1"] = {"task": "a"}
         instrumentor.executing_task_id_to_worker["t1"] = "celery@w"
 
         instrumentor.uninstrument()
 
         self.assertIsNone(instrumentor.metrics)
         self.assertEqual(instrumentor.task_id_to_start_time, {})
-        self.assertEqual(instrumentor.task_id_to_received_time, {})
-        self.assertEqual(instrumentor.prefetched_task_id_to_labels, {})
         self.assertEqual(instrumentor.executing_task_id_to_worker, {})
 
     def test_uninstrument_clears_worker_instrumentor_state(self):
-        """After uninstrument, online_workers and metrics should be reset."""
+        """After uninstrument, online_workers, tracking dicts, and metrics should be reset."""
         instrumentor = CeleryWorkerInstrumentor()
         instrumentor.instrument()
 
         instrumentor.online_workers.add("celery@w1")
+        instrumentor.task_id_to_received_time["t1"] = 1.0
+        instrumentor.prefetched_task_id_to_labels["t1"] = {"task": "a"}
 
         instrumentor.uninstrument()
 
         self.assertIsNone(instrumentor.metrics)
         self.assertEqual(instrumentor.online_workers, set())
+        self.assertEqual(instrumentor.task_id_to_received_time, {})
+        self.assertEqual(instrumentor.prefetched_task_id_to_labels, {})

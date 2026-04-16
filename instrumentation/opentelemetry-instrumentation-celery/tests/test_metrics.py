@@ -147,6 +147,8 @@ class TestMetricsIntegration(TestBase):
         super().setUp()
         self.instrumentor = CeleryInstrumentor()
         self.instrumentor.instrument()
+        self.worker_instrumentor = CeleryWorkerInstrumentor()
+        self.worker_instrumentor.instrument()
         self._worker = app.Worker(
             app=app, pool="solo", concurrency=1, hostname="celery@e2e"
         )
@@ -158,6 +160,7 @@ class TestMetricsIntegration(TestBase):
         self._worker.stop()
         self._thread.join()
         self.instrumentor.uninstrument()
+        self.worker_instrumentor.uninstrument()
         super().tearDown()
 
     @staticmethod
@@ -388,7 +391,7 @@ class TestTaskReceivedMetrics(TestBase):
 
     def setUp(self):
         super().setUp()
-        self.instrumentor = CeleryInstrumentor()
+        self.instrumentor = CeleryWorkerInstrumentor()
         self.instrumentor.instrument()
 
     def tearDown(self):
@@ -458,7 +461,7 @@ class TestTaskRevokedMetrics(TestBase):
 
     def setUp(self):
         super().setUp()
-        self.instrumentor = CeleryInstrumentor()
+        self.instrumentor = CeleryWorkerInstrumentor()
         self.instrumentor.instrument()
 
     def tearDown(self):

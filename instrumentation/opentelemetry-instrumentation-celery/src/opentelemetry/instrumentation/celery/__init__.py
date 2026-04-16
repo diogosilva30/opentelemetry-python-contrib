@@ -217,8 +217,6 @@ class _CeleryTaskMetricNames:
     """Canonical metric names for Celery task instrumentation."""
 
     events_total: str = "flower.events.total"
-    task_prefetch_time_seconds: str = "flower.task.prefetch.time.seconds"
-    worker_prefetched_tasks: str = "flower.worker.prefetched.tasks"
     task_runtime_seconds: str = "flower.task.runtime.seconds"
     worker_currently_executing_tasks: str = (
         "flower.worker.number.of.currently.executing.tasks"
@@ -229,6 +227,9 @@ class _CeleryTaskMetricNames:
 class _CeleryWorkerMetricNames:
     """Canonical metric names for Celery worker lifecycle instrumentation."""
 
+    events_total: str = "flower.events.total"
+    task_prefetch_time_seconds: str = "flower.task.prefetch.time.seconds"
+    worker_prefetched_tasks: str = "flower.worker.prefetched.tasks"
     worker_online: str = "flower.worker.online"
 
 
@@ -257,8 +258,6 @@ class CeleryTaskMetrics:
     """Metrics for tracking Celery task events and states."""
 
     events_total: "Counter"
-    task_prefetch_time_seconds: "Gauge"
-    worker_prefetched_tasks: "UpDownCounter"
     task_runtime_seconds: "Histogram"
     worker_currently_executing_tasks: "UpDownCounter"
 
@@ -267,6 +266,9 @@ class CeleryTaskMetrics:
 class CeleryWorkerMetrics:
     """Metrics for tracking Celery worker lifecycle."""
 
+    events_total: "Counter"
+    task_prefetch_time_seconds: "Gauge"
+    worker_prefetched_tasks: "UpDownCounter"
     worker_online: "UpDownCounter"
 
 
@@ -274,8 +276,8 @@ class CeleryInstrumentor(BaseInstrumentor):
     """An instrumentor for Celery task execution.
 
     Traces task publish, run, failure, retry, and revocation.
-    Tracks task-level metrics (event counts, prefetch time, runtime,
-    prefetched tasks, currently executing tasks).
+    Tracks task-level metrics (event counts, runtime,
+    currently executing tasks).
 
     Must be initialized in the worker subprocess via the
     ``worker_process_init`` signal."""
@@ -284,8 +286,6 @@ class CeleryInstrumentor(BaseInstrumentor):
         super().__init__()
         self.metrics: Optional[CeleryTaskMetrics] = None
         self.task_id_to_start_time: dict = {}
-        self.task_id_to_received_time: dict = {}
-        self.prefetched_task_id_to_labels: dict = {}
         self.executing_task_id_to_worker: dict = {}
 
     def instrumentation_dependencies(self) -> Collection[str]:
@@ -316,14 +316,11 @@ class CeleryInstrumentor(BaseInstrumentor):
         )
 
         self.task_id_to_start_time = {}
-        self.task_id_to_received_time = {}
-        self.prefetched_task_id_to_labels = {}
         self.executing_task_id_to_worker = {}
 
         self.metrics = self.create_task_metrics(meter)
 
         # Connect signal handlers to trace Celery events and track task states
-        signals.task_received.connect(self._trace_task_received, weak=False)
         signals.task_prerun.connect(self._trace_prerun, weak=False)
         signals.task_postrun.connect(self._trace_postrun, weak=False)
         signals.before_task_publish.connect(
@@ -334,22 +331,17 @@ class CeleryInstrumentor(BaseInstrumentor):
         )
         signals.task_failure.connect(self._trace_failure, weak=False)
         signals.task_retry.connect(self._trace_retry, weak=False)
-        signals.task_revoked.connect(self._trace_task_revoked, weak=False)
 
     def _uninstrument(self, **kwargs: object) -> None:
         """Uninstrument Celery by disconnecting all signal handlers and clearing metrics and state."""
-        signals.task_received.disconnect(self._trace_task_received)
         signals.task_prerun.disconnect(self._trace_prerun)
         signals.task_postrun.disconnect(self._trace_postrun)
         signals.before_task_publish.disconnect(self._trace_before_publish)
         signals.after_task_publish.disconnect(self._trace_after_publish)
         signals.task_failure.disconnect(self._trace_failure)
         signals.task_retry.disconnect(self._trace_retry)
-        signals.task_revoked.disconnect(self._trace_task_revoked)
         self.metrics = None
         self.task_id_to_start_time = {}
-        self.task_id_to_received_time = {}
-        self.prefetched_task_id_to_labels = {}
         self.executing_task_id_to_worker = {}
 
     def _metrics(self) -> CeleryTaskMetrics:
@@ -380,52 +372,6 @@ class CeleryInstrumentor(BaseInstrumentor):
             attributes=attributes,
         )
 
-    def _record_prefetch_time(
-        self, task_id: str, task_name: Optional[str], worker: Optional[str]
-    ) -> None:
-        """Record the prefetch time for a task by calculating the time since it was received and recording it in the prefetch time histogram."""
-        if task_name is None or worker is None:
-            return
-
-        received_time = self.task_id_to_received_time.pop(task_id, None)
-        if received_time is None:
-            return
-
-        self._metrics().task_prefetch_time_seconds.set(
-            default_timer() - received_time,
-            attributes={"task": task_name, "worker": worker},
-        )
-
-    def _track_prefetched_task(
-        self,
-        task_id: Optional[str],
-        task_name: Optional[str],
-        worker: Optional[str],
-    ) -> None:
-        """Track a prefetched task by recording its labels and incrementing the prefetched tasks counter."""
-        if task_id is None or task_name is None or worker is None:
-            return
-
-        self.prefetched_task_id_to_labels[task_id] = {
-            "task": task_name,
-            "worker": worker,
-        }
-        self._metrics().worker_prefetched_tasks.add(
-            1,
-            attributes=self.prefetched_task_id_to_labels[task_id],
-        )
-
-    def _untrack_prefetched_task(self, task_id: str) -> None:
-        """Untrack a prefetched task by removing its labels and decrementing the prefetched tasks counter."""
-        labels = self.prefetched_task_id_to_labels.pop(task_id, None)
-        if labels is None:
-            return
-
-        self._metrics().worker_prefetched_tasks.add(
-            -1,
-            attributes=labels,
-        )
-
     def _track_executing_task(
         self,
         task_id: Optional[str],
@@ -451,28 +397,6 @@ class CeleryInstrumentor(BaseInstrumentor):
             -1,
             attributes={"worker": worker},
         )
-
-    def _trace_task_received(
-        self, *args: object, **kwargs: dict[str, Any]
-    ) -> None:
-        """Track a received task by recording its received time and incrementing the task received event counter.
-
-        https://docs.celeryq.dev/en/main/userguide/signals.html#task-received
-        """
-        request = kwargs.get("request")
-        task_id = getattr(request, "id", None)
-        task_name = _retrieve_task_name(request=request)
-        worker = _retrieve_worker_name(
-            request=request, sender=kwargs.get("sender")
-        )
-        _log_signal("task_received", task_id, task_name, worker)
-        if task_id is None or not isinstance(request, Request):
-            return
-
-        self.task_id_to_received_time[task_id] = default_timer()
-
-        self._track_prefetched_task(task_id, task_name, worker)
-        self._record_event_count(_EVENT_TYPES.task_received, task_name, worker)
 
     def _trace_prerun(self, *args: object, **kwargs: object) -> None:
         """Start a span for a task about to be executed and track the executing task by recording its start time and incrementing the executing tasks counter."""
@@ -501,8 +425,6 @@ class CeleryInstrumentor(BaseInstrumentor):
 
         worker = _retrieve_worker_name(task=task)
         self._track_executing_task(task_id, worker)
-        self._untrack_prefetched_task(task_id)
-        self._record_prefetch_time(task_id, task.name, worker)
         self._record_event_count(_EVENT_TYPES.task_started, task.name, worker)
 
     def _trace_postrun(self, *args: object, **kwargs: object) -> None:
@@ -713,26 +635,6 @@ class CeleryInstrumentor(BaseInstrumentor):
         worker = _retrieve_worker_name(task=task)
         self._record_event_count(_EVENT_TYPES.task_retried, task.name, worker)
 
-    def _trace_task_revoked(self, *args: object, **kwargs: object) -> None:
-        """Trace a task revoked event by untracking the task and incrementing the revoked event counter.
-
-        https://docs.celeryq.dev/en/main/userguide/signals.html#task-revoked
-        """
-        request = kwargs.get("request")
-        task_id = getattr(request, "id", None)
-        task_name = _retrieve_task_name(request=request)
-        worker = _retrieve_worker_name(
-            request=request, sender=kwargs.get("sender")
-        )
-        _log_signal("task_revoked", task_id, task_name, worker)
-        if task_id is None or request is None:
-            return
-
-        self._untrack_prefetched_task(task_id)
-        self._untrack_executing_task(task_id)
-        self.task_id_to_received_time.pop(task_id, None)
-        self._record_event_count(_EVENT_TYPES.task_revoked, task_name, worker)
-
     def update_task_duration_time(self, task_id: str) -> None:
         """Update the duration time for a task by calculating the time since it was last started or updated."""
         cur_time = default_timer()
@@ -768,19 +670,6 @@ class CeleryInstrumentor(BaseInstrumentor):
                     "Number of task and worker events recorded "
                     "by Celery instrumentation."
                 ),
-            ),
-            task_prefetch_time_seconds=meter.create_gauge(
-                name=_TASK_METRIC_NAMES.task_prefetch_time_seconds,
-                unit="seconds",
-                description=(
-                    "The time the task spent waiting at the celery worker "
-                    "to be executed."
-                ),
-            ),
-            worker_prefetched_tasks=meter.create_up_down_counter(
-                name=_TASK_METRIC_NAMES.worker_prefetched_tasks,
-                unit="{task}",
-                description="Number of prefetched tasks at a worker.",
             ),
             task_runtime_seconds=meter.create_histogram(
                 name=_TASK_METRIC_NAMES.task_runtime_seconds,
@@ -818,6 +707,8 @@ class CeleryWorkerInstrumentor(BaseInstrumentor):
         super().__init__()
         self.metrics: Optional[CeleryWorkerMetrics] = None
         self.online_workers: set = set()
+        self.task_id_to_received_time: dict = {}
+        self.prefetched_task_id_to_labels: dict = {}
 
     def instrumentation_dependencies(self) -> Collection[str]:
         return _instruments
@@ -835,19 +726,29 @@ class CeleryWorkerInstrumentor(BaseInstrumentor):
         )
 
         self.online_workers = set()
+        self.task_id_to_received_time = {}
+        self.prefetched_task_id_to_labels = {}
         self.metrics = self._create_worker_metrics(meter)
 
         signals.worker_ready.connect(self._trace_worker_ready, weak=False)
         signals.worker_shutdown.connect(
             self._trace_worker_shutdown, weak=False
         )
+        signals.task_received.connect(self._trace_task_received, weak=False)
+        signals.task_revoked.connect(self._trace_task_revoked, weak=False)
+        signals.task_prerun.connect(self._trace_prerun_metrics, weak=False)
 
     def _uninstrument(self, **kwargs: object) -> None:
         """Disconnect worker lifecycle signal handlers."""
         signals.worker_ready.disconnect(self._trace_worker_ready)
         signals.worker_shutdown.disconnect(self._trace_worker_shutdown)
+        signals.task_received.disconnect(self._trace_task_received)
+        signals.task_revoked.disconnect(self._trace_task_revoked)
+        signals.task_prerun.disconnect(self._trace_prerun_metrics)
         self.metrics = None
         self.online_workers = set()
+        self.task_id_to_received_time = {}
+        self.prefetched_task_id_to_labels = {}
 
     def _worker_metrics(self) -> CeleryWorkerMetrics:
         """Return the worker metrics, raising if not yet initialized."""
@@ -882,10 +783,156 @@ class CeleryWorkerInstrumentor(BaseInstrumentor):
             attributes={"worker": worker},
         )
 
+    def _record_event_count(
+        self,
+        event_type: str,
+        task_name: Optional[str] = None,
+        worker: Optional[str] = None,
+    ) -> None:
+        """Record a Celery event by incrementing the events counter."""
+        if task_name is None:
+            return
+
+        attributes: dict[str, str] = {
+            "type": event_type,
+            "task": task_name,
+        }
+        if worker is not None:
+            attributes["worker"] = worker
+        self._worker_metrics().events_total.add(
+            1,
+            attributes=attributes,
+        )
+
+    def _record_prefetch_time(
+        self, task_id: str, task_name: Optional[str], worker: Optional[str]
+    ) -> None:
+        """Record the prefetch time for a task."""
+        if task_name is None or worker is None:
+            return
+
+        received_time = self.task_id_to_received_time.pop(task_id, None)
+        if received_time is None:
+            return
+
+        self._worker_metrics().task_prefetch_time_seconds.set(
+            default_timer() - received_time,
+            attributes={"task": task_name, "worker": worker},
+        )
+
+    def _track_prefetched_task(
+        self,
+        task_id: Optional[str],
+        task_name: Optional[str],
+        worker: Optional[str],
+    ) -> None:
+        """Track a prefetched task by incrementing the prefetched tasks counter."""
+        if task_id is None or task_name is None or worker is None:
+            return
+
+        self.prefetched_task_id_to_labels[task_id] = {
+            "task": task_name,
+            "worker": worker,
+        }
+        self._worker_metrics().worker_prefetched_tasks.add(
+            1,
+            attributes=self.prefetched_task_id_to_labels[task_id],
+        )
+
+    def _untrack_prefetched_task(self, task_id: str) -> None:
+        """Untrack a prefetched task by decrementing the prefetched tasks counter."""
+        labels = self.prefetched_task_id_to_labels.pop(task_id, None)
+        if labels is None:
+            return
+
+        self._worker_metrics().worker_prefetched_tasks.add(
+            -1,
+            attributes=labels,
+        )
+
+    def _trace_prerun_metrics(self, *args: object, **kwargs: object) -> None:
+        """Update prefetch metrics when a task starts executing.
+
+        Decrements the prefetched-tasks gauge and records the prefetch
+        time.  In ``pool=solo`` this fires in the same process as
+        ``_trace_task_received``; in ``pool=prefork`` the handler is
+        connected but never dispatched (task_prerun fires in the child).
+        """
+        task = utils.retrieve_task(kwargs)
+        task_id = utils.retrieve_task_id(kwargs)
+        if task is None or task_id is None:
+            return
+
+        worker = _retrieve_worker_name(task=task)
+        self._untrack_prefetched_task(task_id)
+        self._record_prefetch_time(task_id, task.name, worker)
+
+    def _trace_task_received(
+        self, *args: object, **kwargs: dict[str, Any]
+    ) -> None:
+        """Track a received task by recording its received time and incrementing the task received event counter.
+
+        https://docs.celeryq.dev/en/main/userguide/signals.html#task-received
+        """
+        request = kwargs.get("request")
+        task_id = getattr(request, "id", None)
+        task_name = _retrieve_task_name(request=request)
+        worker = _retrieve_worker_name(
+            request=request, sender=kwargs.get("sender")
+        )
+        _log_signal("task_received", task_id, task_name, worker)
+        if task_id is None or not isinstance(request, Request):
+            return
+
+        self.task_id_to_received_time[task_id] = default_timer()
+
+        self._track_prefetched_task(task_id, task_name, worker)
+        self._record_event_count(_EVENT_TYPES.task_received, task_name, worker)
+
+    def _trace_task_revoked(self, *args: object, **kwargs: object) -> None:
+        """Trace a task revoked event by untracking the task and incrementing the revoked event counter.
+
+        https://docs.celeryq.dev/en/main/userguide/signals.html#task-revoked
+        """
+        request = kwargs.get("request")
+        task_id = getattr(request, "id", None)
+        task_name = _retrieve_task_name(request=request)
+        worker = _retrieve_worker_name(
+            request=request, sender=kwargs.get("sender")
+        )
+        _log_signal("task_revoked", task_id, task_name, worker)
+        if task_id is None or request is None:
+            return
+
+        self._untrack_prefetched_task(task_id)
+        self.task_id_to_received_time.pop(task_id, None)
+        self._record_event_count(_EVENT_TYPES.task_revoked, task_name, worker)
+
     @staticmethod
     def _create_worker_metrics(meter: "Meter") -> CeleryWorkerMetrics:
         """Create the metrics for tracking Celery worker lifecycle."""
         return CeleryWorkerMetrics(
+            events_total=meter.create_counter(
+                name=_WORKER_METRIC_NAMES.events_total,
+                unit="{event}",
+                description=(
+                    "Number of task and worker events recorded "
+                    "by Celery instrumentation."
+                ),
+            ),
+            task_prefetch_time_seconds=meter.create_gauge(
+                name=_WORKER_METRIC_NAMES.task_prefetch_time_seconds,
+                unit="seconds",
+                description=(
+                    "The time the task spent waiting at the celery worker "
+                    "to be executed."
+                ),
+            ),
+            worker_prefetched_tasks=meter.create_up_down_counter(
+                name=_WORKER_METRIC_NAMES.worker_prefetched_tasks,
+                unit="{task}",
+                description="Number of prefetched tasks at a worker.",
+            ),
             worker_online=meter.create_up_down_counter(
                 name=_WORKER_METRIC_NAMES.worker_online,
                 unit="{worker}",
