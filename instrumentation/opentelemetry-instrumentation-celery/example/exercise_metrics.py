@@ -8,9 +8,7 @@ Usage (from the example/ directory, with the worker already running):
 What it triggers:
     flower.events.total  (task-sent, task-received, task-started,
                           task-succeeded, task-failed, task-retried, task-revoked)
-    flower.task.prefetch.time.seconds
     flower.task.runtime.seconds
-    flower.worker.prefetched.tasks
     flower.worker.number.of.currently.executing.tasks
     flower.worker.online
 """
@@ -105,24 +103,9 @@ def main() -> None:
     time.sleep(2)  # give the worker time to process the revocation
 
     # ------------------------------------------------------------------
-    # 6. Prefetch backlog  →  prefetch time gauge, prefetched tasks counter
-    #    Send more slow tasks than the worker can run concurrently so some
-    #    sit in the prefetch buffer, producing measurable prefetch times.
+    # 6. Burst of fast tasks  →  concurrent execution gauge
     # ------------------------------------------------------------------
-    section("6. Prefetch backlog (slow_task × 8, worker can't run all at once)")
-    prefetch_batch = [slow_task.delay(3) for _ in range(8)]
-    time.sleep(1)  # let some get received while others wait
-    for i, r in enumerate(prefetch_batch):
-        wait_for(r, timeout=30, label=f"prefetch #{i}")
-    successes = sum(1 for r in prefetch_batch if r.status == "SUCCESS")
-    print(f"  {successes}/8 slow tasks succeeded")
-    print("  (check flower.task.prefetch.time.seconds and")
-    print("   flower.worker.prefetched.tasks in Grafana)")
-
-    # ------------------------------------------------------------------
-    # 7. Burst of fast tasks  →  concurrent execution gauge
-    # ------------------------------------------------------------------
-    section("7. Burst of 10 fast tasks (concurrency gauge)")
+    section("6. Burst of 10 fast tasks (concurrency gauge)")
     burst = [add.delay(i, i * 2) for i in range(10)]
     for i, r in enumerate(burst):
         wait_for(r, label=f"burst #{i}")
